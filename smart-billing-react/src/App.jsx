@@ -30,14 +30,20 @@ function App() {
 
       for (const file of filesList) {
         let data = [];
+        let headers = [];
         if (file.name.endsWith('.csv')) {
-          data = await parseCSV(file);
+          const result = await parseCSV(file);
+          data = result.data;
+          headers = result.headers;
         } else {
-          data = await parseXLS(file);
+          const result = await parseXLS(file);
+          data = result.data;
+          headers = result.headers;
         }
         newProcessedFiles[file.name] = {
           name: file.name,
           data: data,
+          headers: headers,
           uploadedAt: new Date().toISOString()
         };
       }
@@ -58,7 +64,7 @@ function App() {
     return new Promise((resolve) => {
       Papa.parse(file, {
         header: true,
-        complete: (results) => resolve(results.data)
+        complete: (results) => resolve({ data: results.data, headers: results.meta.fields })
       });
     });
   }
@@ -69,8 +75,43 @@ function App() {
       reader.onload = (e) => {
         const workbook = XLSX.read(e.target.result, { type: 'array' });
         const sheetName = workbook.SheetNames[0];
-        const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
-        resolve(data);
+        const sheet = workbook.Sheets[sheetName];
+        // Use cellDates: true to automatically parse Excel serial dates (e.g. 46022) to Date objects
+        const rawData = XLSX.utils.sheet_to_json(sheet, { cellDates: true });
+
+        // Post-process to ensure Dates become standard strings (YYYY-MM-DD)
+        const data = rawData.map(row => {
+          const newRow = {};
+          Object.keys(row).forEach(key => {
+            const val = row[key];
+            if (val instanceof Date) {
+              // Use local time methods to avoid UTC shifts (which can cause off-by-one day errors)
+              const year = val.getFullYear();
+              const month = String(val.getMonth() + 1).padStart(2, '0');
+              const day = String(val.getDate()).padStart(2, '0');
+              // Format as DD-MM-YYYY to match the target website's expected text format.
+              // Note: content.js handles conversion to YYYY-MM-DD for input type="date" automatically.
+              newRow[key] = `${day}-${month}-${year}`;
+            } else {
+              newRow[key] = val;
+            }
+          });
+          return newRow;
+        });
+
+        // Extract headers ensuring they match the file's visual order
+        let headers = [];
+
+        // 1. Primary Method: Get the first row directly as array.
+        const headerRow = XLSX.utils.sheet_to_json(sheet, { header: 1 })[0];
+
+        if (headerRow && Array.isArray(headerRow) && headerRow.length > 0) {
+          headers = headerRow.map(h => String(h || ""));
+        } else if (data.length > 0) {
+          headers = Object.keys(data[0]);
+        }
+
+        resolve({ data, headers });
       };
       reader.readAsArrayBuffer(file);
     });
@@ -93,7 +134,44 @@ function App() {
   const performAutofill = async () => {
     if (!selectedRow) return;
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    chrome.tabs.sendMessage(tab.id, { action: 'autofill', data: selectedRow });
+
+    // Use scripting to broadcast to ALL frames (iframes included)
+    // We send a custom DOM event that content.js listens for, 
+    // or we can try to send a message from within the frame to itself (redundant).
+    // The most robust way for "all frames" without keeping track of frame IDs is:
+    // Execute a script in all frames that dispatches an event.
+
+    chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
+      func: (data) => {
+        // Dispatch event that content.js listens for
+        window.dispatchEvent(new CustomEvent('SMART_BILLING_AUTOFILL_TRIGGER', { detail: data }));
+      },
+      args: [selectedRow]
+    });
+
+    // Mark row as filled
+    const rowIndex = currentData.indexOf(selectedRow);
+    if (rowIndex !== -1) {
+      const updatedRow = { ...selectedRow, __filled: true };
+      const updatedData = [...currentData];
+      updatedData[rowIndex] = updatedRow;
+
+      setCurrentData(updatedData);
+      setSelectedRow(updatedRow);
+
+      if (currentFile) {
+        const updatedFiles = {
+          ...files,
+          [currentFile]: {
+            ...files[currentFile],
+            data: updatedData
+          }
+        };
+        setFiles(updatedFiles);
+        chrome.storage.local.set({ files: updatedFiles });
+      }
+    }
   }
 
   return (
@@ -121,6 +199,7 @@ function App() {
           <RowSection
             fileName={currentFile}
             data={currentData}
+            headers={files[currentFile]?.headers}
             selectedRow={selectedRow}
             setSelectedRow={setSelectedRow}
             onBack={() => setCurrentView('view')}

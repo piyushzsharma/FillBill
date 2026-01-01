@@ -3,6 +3,7 @@ import { useState } from "react";
 export default function RowSection({
     fileName,
     data,
+    headers: propHeaders,
     selectedRow,
     setSelectedRow,
     onBack,
@@ -47,10 +48,12 @@ export default function RowSection({
 
     const filteredData = data.filter((row) =>
         JSON.stringify(row).toLowerCase().includes(search.toLowerCase())
-
     );
 
-    const headers = Object.keys(data[0] || {});
+    // Use explicit headers from props if available, otherwise derive from data
+    const headers = propHeaders && propHeaders.length > 0
+        ? propHeaders.filter(key => key && !key.startsWith('__'))
+        : Object.keys(data[0] || {}).filter(key => key && !key.startsWith('__'));
 
     return (
         <div className="flex flex-col h-full">
@@ -108,26 +111,28 @@ export default function RowSection({
                 <table className="w-full text-xs text-left">
                     <thead className="bg-slate-50 sticky top-0 z-10 text-slate-500 font-semibold border-b border-slate-200">
                         <tr>
-                            {headers.map((h) => (
-                                <th key={h} className="px-3 py-2.5 whitespace-nowrap">
+                            {headers.map((h, i) => (
+                                <th key={`${h}-${i}`} className="px-3 py-2.5 whitespace-nowrap">
                                     {h}
                                 </th>
                             ))}
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                        {filteredData.map((row, i) => (
+                        {filteredData.map((row, rowIndex) => (
                             <tr
-                                key={i}
+                                key={rowIndex}
                                 onClick={() => setSelectedRow(row)}
                                 className={`cursor-pointer transition-colors ${selectedRow === row
                                     ? "bg-blue-50 text-blue-700"
-                                    : "text-slate-600 hover:bg-slate-50"
+                                    : row.__filled
+                                        ? "bg-slate-50/50 text-slate-400 grayscale hover:bg-slate-100/50"
+                                        : "text-slate-600 hover:bg-slate-50"
                                     }`}
                             >
-                                {headers.map((h) => (
+                                {headers.map((h, colIndex) => (
                                     <td
-                                        key={h}
+                                        key={`${h}-${colIndex}`}
                                         className="px-3 py-2 whitespace-nowrap max-w-[150px] truncate"
                                     >
                                         {row[h]}
